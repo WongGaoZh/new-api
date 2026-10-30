@@ -55,7 +55,8 @@ export function getChannelTypeIcon(type: number): string {
     59: 'Sub2API', // Sub2API
     60: 'NewAPI', // New API
     62: 'Vllm', // vLLM
-    63: 'SGLang', // SGLang
+    63: 'Baidu', // Comate
+    64: 'SGLang', // SGLang
     3: 'Azure', // Azure
 
     // Anthropic

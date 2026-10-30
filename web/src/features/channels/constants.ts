@@ -36,7 +36,9 @@ export const CHANNEL_TYPE_TASK_PLUGIN = 61
 
 export const CHANNEL_TYPE_VLLM = 62
 
-export const CHANNEL_TYPE_SGLANG = 63
+export const CHANNEL_TYPE_COMATE = 63
+
+export const CHANNEL_TYPE_SGLANG = 64
 
 export const CHANNEL_TYPES = {
   0: 'Unknown',
@@ -98,7 +100,8 @@ export const CHANNEL_TYPES = {
   60: 'New API',
   61: 'Task Plugin',
   62: 'vLLM',
-  63: 'SGLang',
+  63: 'Comate',
+  64: 'SGLang',
 } as const
 
 export type ChannelProviderPresentation = {
@@ -181,7 +184,11 @@ export const CHANNEL_PROVIDER_PRESENTATION: Partial<
       'Connect to New API model services with support for multiple task plugins',
   },
   62: { descriptionKey: 'Connect to self-hosted models served by vLLM' },
-  63: { descriptionKey: 'Connect to self-hosted models served by SGLang' },
+  63: {
+    descriptionKey:
+      'Access Baidu Comate through the public SaaS API using a license',
+  },
+  64: { descriptionKey: 'Connect to self-hosted models served by SGLang' },
 } satisfies Record<
   Exclude<keyof typeof CHANNEL_TYPES, 0 | typeof CHANNEL_TYPE_TASK_PLUGIN>,
   ChannelProviderPresentation
@@ -571,7 +578,8 @@ export const TYPE_TO_KEY_PROMPT: Record<number, string> = {
   59: 'Enter API key for this channel',
   60: 'Enter API key for this channel',
   62: 'vLLM API key, or EMPTY if authentication is disabled',
-  63: 'SGLang API key, or EMPTY if authentication is disabled',
+  63: 'Paste the Comate license (baidu.comate.license)',
+  64: 'SGLang API key, or EMPTY if authentication is disabled',
 }
 
 export const CHANNEL_TYPE_WARNINGS: Record<number, string> = {

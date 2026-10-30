@@ -60,7 +60,8 @@ const (
 	ChannelTypeNewAPI         = 60
 	ChannelTypeTaskPlugin     = 61
 	ChannelTypeVLLM           = 62
-	ChannelTypeSGLang         = 63
+	ChannelTypeComate         = 63
+	ChannelTypeSGLang         = 64
 	ChannelTypeDummy          // this one is only for count, do not add any channel after this
 
 )
@@ -131,7 +132,9 @@ var ChannelBaseURLs = []string{
 	"",                                          //60
 	"",                                          //61
 	"",                                          //62
-	"",                                          //63
+	"https://comate.baidu.com",                  //63
+	"",                                          //64
+	"",                                          //65
 }
 
 func GetChannelBaseURL(channelType int) string {
@@ -201,6 +204,7 @@ var ChannelTypeNames = map[int]string{
 	ChannelTypeNewAPI:         "New API",
 	ChannelTypeTaskPlugin:     "Task Plugin",
 	ChannelTypeVLLM:           "vLLM",
+	ChannelTypeComate:         "Comate",
 	ChannelTypeSGLang:         "SGLang",
 }
 
