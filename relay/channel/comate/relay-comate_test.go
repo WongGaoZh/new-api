@@ -15,22 +15,44 @@ func TestParseComateLine(t *testing.T) {
 		line      string
 		ok        bool
 		msgType   string
+		delta     string
 		summary   string
 		exception string
+		end       bool
 	}{
 		{
-			name:    "ANSWER with end flag",
+			name:    "delta frame",
+			line:    `data: {"content":{"type":"ANSWER","detail":{"delta":"pong","end":false},"end":false}}`,
+			ok:      true,
+			msgType: "ANSWER",
+			delta:   "pong",
+		},
+		{
+			name:    "end frame",
+			line:    `data: {"content":{"type":"ANSWER","detail":{"delta":"","end":true},"end":false}}`,
+			ok:      true,
+			msgType: "ANSWER",
+			end:     true,
+		},
+		{
+			name:    "legacy summary frame",
 			line:    `data: {"content":{"type":"ANSWER","detail":{"summary":"hello"},"end":true}}`,
 			ok:      true,
 			msgType: "ANSWER",
 			summary: "hello",
+			end:     true,
 		},
 		{
-			name:      "EXCEPTION with message",
-			line:      `data: {"content":{"type":"EXCEPTION","detail":{"exceptionMsg":"plugin version too low"},"end":true}}`,
+			name:      "exception frame",
+			line:      `data: {"content":{"type":"EXCEPTION","text":"{\"exceptionMsg\":\"参数toolUseResults不能为空\"}","detail":{"exceptionMsg":"参数toolUseResults不能为空"}}}`,
 			ok:        true,
 			msgType:   "EXCEPTION",
-			exception: "plugin version too low",
+			exception: "参数toolUseResults不能为空",
+		},
+		{
+			name: "heartbeat is skipped",
+			line: ":heartbeat",
+			ok:   false,
 		},
 		{
 			name: "blank line is skipped",
@@ -39,12 +61,7 @@ func TestParseComateLine(t *testing.T) {
 		},
 		{
 			name: "DONE marker is skipped",
-			line: "[DONE]",
-			ok:   false,
-		},
-		{
-			name: "comment line is skipped",
-			line: ": keepalive",
+			line: "data: [DONE]",
 			ok:   false,
 		},
 	}
@@ -55,8 +72,10 @@ func TestParseComateLine(t *testing.T) {
 			assert.Equal(t, tt.ok, ok)
 			if ok {
 				assert.Equal(t, tt.msgType, payload.Content.Type)
+				assert.Equal(t, tt.delta, payload.Content.Detail.Delta)
 				assert.Equal(t, tt.summary, payload.Content.Detail.Summary)
 				assert.Equal(t, tt.exception, payload.Content.Detail.ExceptionMsg)
+				assert.Equal(t, tt.end, payloadIsEnd(payload))
 			}
 		})
 	}
@@ -64,30 +83,39 @@ func TestParseComateLine(t *testing.T) {
 
 func TestReadComateSSE(t *testing.T) {
 	stream := strings.Join([]string{
-		`data: {"content":{"type":"ANSWER","detail":{"summary":"I am a"},"end":false}}`,
-		`data: {"content":{"type":"ANSWER","detail":{"summary":"I am a helpful assistant"},"end":true}}`,
-		``,
+		":heartbeat",
+		`data: {"content":{"type":"ANSWER","detail":{"delta":"我是","end":false}}}`,
+		`data: {"content":{"type":"ANSWER","detail":{"delta":" Comate","end":false}}}`,
+		`data: {"content":{"type":"ANSWER","detail":{"delta":"","end":true}}}`,
 	}, "\n")
-	answer, _, err := readComateSSE(strings.NewReader(stream))
+	answer, err := readComateSSE(strings.NewReader(stream))
 	require.NoError(t, err)
-	assert.Equal(t, "I am a helpful assistant", answer)
+	assert.Equal(t, "我是 Comate", answer)
 }
 
 func TestReadComateSSEException(t *testing.T) {
-	stream := `data: {"content":{"type":"EXCEPTION","detail":{"exceptionMsg":"upgrade your plugin"},"end":true}}`
-	_, _, err := readComateSSE(strings.NewReader(stream))
+	stream := `data: {"content":{"type":"EXCEPTION","text":"{\"exceptionMsg\":\"参数toolUseResults不能为空\"}","detail":{"exceptionMsg":"参数toolUseResults不能为空"}}}`
+	_, err := readComateSSE(strings.NewReader(stream))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "upgrade your plugin")
+	assert.Contains(t, err.Error(), "toolUseResults")
 }
 
-func TestAppendAnswerDelta(t *testing.T) {
-	var emitted strings.Builder
-	assert.Equal(t, "", appendAnswerDelta(&emitted, ""))
-	assert.Equal(t, "hello", appendAnswerDelta(&emitted, "hello"))
-	// Prefix extension returns only the new part.
-	assert.Equal(t, " world", appendAnswerDelta(&emitted, "hello world"))
-	// Non-prefix summary replaces the accumulated text.
-	assert.Equal(t, "completely different", appendAnswerDelta(&emitted, "completely different"))
+func TestAppendPayloadText(t *testing.T) {
+	var empty strings.Builder
+	appendPayloadText(&empty, comateStreamPayload{})
+	assert.Equal(t, "", empty.String())
+
+	// Legacy summary frames repeat the full answer and need dedupe.
+	var legacy strings.Builder
+	legacy.WriteString("hello")
+	appendPayloadText(&legacy, payloadWithSummary("hello world"))
+	assert.Equal(t, "hello world", legacy.String())
+
+	// Delta frames are appended as-is.
+	var delta strings.Builder
+	delta.WriteString("he")
+	appendPayloadText(&delta, payloadWithDelta("llo"))
+	assert.Equal(t, "hello", delta.String())
 }
 
 func TestExtractUserText(t *testing.T) {
@@ -119,4 +147,18 @@ func TestExtractUserText(t *testing.T) {
 			assert.Equal(t, tt.want, extractUserText(tt.msgs))
 		})
 	}
+}
+
+func payloadWithSummary(s string) comateStreamPayload {
+	var p comateStreamPayload
+	p.Content.Type = "ANSWER"
+	p.Content.Detail.Summary = s
+	return p
+}
+
+func payloadWithDelta(s string) comateStreamPayload {
+	var p comateStreamPayload
+	p.Content.Type = "ANSWER"
+	p.Content.Detail.Delta = s
+	return p
 }

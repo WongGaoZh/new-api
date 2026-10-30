@@ -21,15 +21,20 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// comateStreamPayload is one "data:" line of the Comate chat/stream SSE.
+// comateStreamPayload is one "data:" line of the Comate execute SSE.
+// v2/execute streams increments in content.detail.delta; the legacy
+// chat/stream protocol put the text in content.detail.summary.
 type comateStreamPayload struct {
 	Content struct {
 		Type   string `json:"type"` // ANSWER | EXCEPTION
+		Text   string `json:"text"`
 		Detail struct {
+			Delta          string `json:"delta"`
 			Summary        string `json:"summary"`
 			ExceptionMsg   string `json:"exceptionMsg"`
 			ConversationId string `json:"conversationId"`
 			MessageId      string `json:"messageId"`
+			End            bool   `json:"end"`
 		} `json:"detail"`
 		End bool `json:"end"`
 	} `json:"content"`
@@ -39,7 +44,7 @@ type comateStreamPayload struct {
 // OpenAI chat completion JSON for non-streaming clients.
 func comateHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (usage any, err *types.NewAPIError) {
 	defer service.CloseResponseBodyGracefully(resp)
-	answer, _, streamErr := readComateSSE(resp.Body)
+	answer, streamErr := readComateSSE(resp.Body)
 	if streamErr != nil {
 		return nil, types.NewErrorWithStatusCode(streamErr, types.ErrorCodeDoRequestFailed, http.StatusBadGateway)
 	}
@@ -66,12 +71,12 @@ func comateHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	return &completion.Usage, nil
 }
 
-// comateStreamHandler converts the Comate SSE into OpenAI chat completion
-// chunks: incremental text is forwarded as it arrives, the final answer (which
-// may only appear on the end line) is emitted before [DONE].
+// comateStreamHandler forwards Comate SSE increments as OpenAI chunks and
+// finishes with a stop chunk and the [DONE] marker.
 func comateStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (usage any, err *types.NewAPIError) {
 	defer service.CloseResponseBodyGracefully(resp)
-	answer, _, streamErr := readComateSSEStream(c, info, resp.Body)
+	helper.SetEventStreamHeaders(c)
+	answer, streamErr := streamComateSSE(c, info, resp.Body)
 	if streamErr != nil {
 		return nil, types.NewErrorWithStatusCode(streamErr, types.ErrorCodeDoRequestFailed, http.StatusBadGateway)
 	}
@@ -79,129 +84,87 @@ func comateStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	return &estimated, nil
 }
 
-// readComateSSE consumes the whole body and returns the final answer text and
-// the accumulated streamed text.
-func readComateSSE(body io.Reader) (answer string, streamed string, err error) {
+// readComateSSE consumes the whole body and returns the final answer text.
+func readComateSSE(body io.Reader) (string, error) {
 	scanner := newComateScanner(body)
-	var emitted strings.Builder
-	var finalAnswer string
+	var answer strings.Builder
 	for scanner.Scan() {
-		payload, ok, parseErr := parseComateLine(scanner.Bytes())
-		if parseErr != nil {
-			return "", emitted.String(), parseErr
+		payload, ok, err := parseComateLine(scanner.Bytes())
+		if err != nil {
+			return answer.String(), err
 		}
 		if !ok {
 			continue
 		}
 		if payload.Content.Type == "EXCEPTION" {
-			return "", emitted.String(), errors.New(comateExceptionMessage(payload))
+			return answer.String(), errors.New(comateExceptionMessage(payload))
 		}
-		if payload.Content.Type != "ANSWER" {
-			continue
-		}
-		appendAnswerDelta(&emitted, payload.Content.Detail.Summary)
-		if payload.Content.End {
-			finalAnswer = payload.Content.Detail.Summary
-			if finalAnswer == "" {
-				finalAnswer = emitted.String()
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return "", emitted.String(), fmt.Errorf("read Comate stream failed: %w", err)
-	}
-	if finalAnswer == "" {
-		finalAnswer = emitted.String()
-	}
-	return finalAnswer, emitted.String(), nil
-}
-
-// readComateSSEStream forwards the Comate SSE to the client as OpenAI chunks.
-// It sends the final answer, a stop chunk and the [DONE] marker when the
-// upstream completes.
-func readComateSSEStream(c *gin.Context, info *relaycommon.RelayInfo, body io.Reader) (answer string, streamed string, err error) {
-	scanner := newComateScanner(body)
-	var emitted strings.Builder
-	var finalAnswer string
-	for scanner.Scan() {
-		payload, ok, parseErr := parseComateLine(scanner.Bytes())
-		if parseErr != nil {
-			return "", emitted.String(), parseErr
-		}
-		if !ok {
-			continue
-		}
-		if payload.Content.Type == "EXCEPTION" {
-			return "", emitted.String(), errors.New(comateExceptionMessage(payload))
-		}
-		if payload.Content.Type != "ANSWER" {
-			continue
-		}
-		// Forward incremental text while it is a strict extension of what was
-		// already sent; the complete answer may arrive only on the end line.
-		delta := appendAnswerDelta(&emitted, payload.Content.Detail.Summary)
-		if delta != "" {
-			chunk := buildStreamChunk(info, delta, nil)
-			if err := helper.ObjectData(c, chunk); err != nil {
-				return "", emitted.String(), err
-			}
-		}
-		if payload.Content.End {
-			finalAnswer = payload.Content.Detail.Summary
-			if finalAnswer == "" {
-				finalAnswer = emitted.String()
-			}
-			// Emit any remaining text that only appeared on the end line.
-			if remainder := answerRemainder(&emitted, finalAnswer); remainder != "" {
-				if err := helper.ObjectData(c, buildStreamChunk(info, remainder, nil)); err != nil {
-					return "", emitted.String(), err
-				}
-			}
-			stop := constant.FinishReasonStop
-			if err := helper.ObjectData(c, buildStreamChunk(info, "", &stop)); err != nil {
-				return "", emitted.String(), err
-			}
-			if err := helper.StringData(c, "[DONE]"); err != nil {
-				return "", emitted.String(), err
-			}
+		appendPayloadText(&answer, payload)
+		if payloadIsEnd(payload) {
 			break
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return "", emitted.String(), fmt.Errorf("read Comate stream failed: %w", err)
+		return answer.String(), fmt.Errorf("read Comate stream failed: %w", err)
 	}
-	return finalAnswer, emitted.String(), nil
+	return answer.String(), nil
 }
 
-// answerRemainder returns the part of the final answer not yet streamed.
-func answerRemainder(emitted *strings.Builder, finalAnswer string) string {
-	current := emitted.String()
-	if finalAnswer == "" || finalAnswer == current {
-		return ""
+// streamComateSSE forwards each text increment as an OpenAI chunk.
+func streamComateSSE(c *gin.Context, info *relaycommon.RelayInfo, body io.Reader) (string, error) {
+	scanner := newComateScanner(body)
+	var answer strings.Builder
+	finished := false
+	for scanner.Scan() {
+		payload, ok, err := parseComateLine(scanner.Bytes())
+		if err != nil {
+			return answer.String(), err
+		}
+		if !ok {
+			continue
+		}
+		if payload.Content.Type == "EXCEPTION" {
+			return answer.String(), errors.New(comateExceptionMessage(payload))
+		}
+		delta := payloadText(payload)
+		if delta != "" {
+			answer.WriteString(delta)
+			if err := helper.ObjectData(c, buildStreamChunk(info, delta, nil)); err != nil {
+				return answer.String(), err
+			}
+		}
+		if payloadIsEnd(payload) {
+			finished = true
+			break
+		}
 	}
-	if len(finalAnswer) > len(current) && strings.HasPrefix(finalAnswer, current) {
-		return finalAnswer[len(current):]
+	if err := scanner.Err(); err != nil {
+		return answer.String(), fmt.Errorf("read Comate stream failed: %w", err)
 	}
-	// The final answer replaced the accumulated text: stream it wholesale.
-	delta := finalAnswer
-	emitted.Reset()
-	emitted.WriteString(finalAnswer)
-	return delta
+	stop := constant.FinishReasonStop
+	if err := helper.ObjectData(c, buildStreamChunk(info, "", &stop)); err != nil {
+		return answer.String(), err
+	}
+	if err := helper.StringData(c, "[DONE]"); err != nil {
+		return answer.String(), err
+	}
+	if !finished {
+		// Upstream closed without an explicit end frame: keep the answer that
+		// was streamed instead of failing the request.
+		return answer.String(), nil
+	}
+	return answer.String(), nil
 }
 
 // parseComateLine parses one "data: {...}" line. ok=false means the line is
-// not a data event (blank lines, comments, [DONE], etc.).
+// not a data event (blank lines, comments, heartbeats, [DONE]).
 func parseComateLine(line []byte) (payload comateStreamPayload, ok bool, err error) {
 	trimmed := bytes.TrimSpace(line)
-	if len(trimmed) == 0 || bytes.HasPrefix(trimmed, []byte(":")) {
+	if len(trimmed) == 0 || !bytes.HasPrefix(trimmed, []byte("data:")) {
 		return payload, false, nil
 	}
-	if bytes.Equal(trimmed, []byte("[DONE]")) {
-		return payload, false, nil
-	}
-	data := bytes.TrimPrefix(trimmed, []byte("data:"))
-	data = bytes.TrimSpace(data)
-	if len(data) == 0 {
+	data := bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:")))
+	if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
 		return payload, false, nil
 	}
 	if err := common.Unmarshal(data, &payload); err != nil {
@@ -210,31 +173,40 @@ func parseComateLine(line []byte) (payload comateStreamPayload, ok bool, err err
 	return payload, true, nil
 }
 
-// appendAnswerDelta grows the emitted answer with the latest summary text and
-// returns only the new part (Comate summaries may arrive incrementally or only
-// on the final line).
-func appendAnswerDelta(emitted *strings.Builder, summary string) string {
-	if summary == "" {
-		return ""
+// payloadText returns the incremental text carried by one frame.
+func payloadText(payload comateStreamPayload) string {
+	if delta := payload.Content.Detail.Delta; delta != "" {
+		return delta
 	}
-	current := emitted.String()
+	return payload.Content.Detail.Summary
+}
+
+// appendPayloadText adds a frame's text to the buffer. Delta frames are
+// incremental; summary frames may repeat the full answer and need dedupe.
+func appendPayloadText(answer *strings.Builder, payload comateStreamPayload) {
+	delta := payload.Content.Detail.Delta
+	if delta != "" {
+		answer.WriteString(delta)
+		return
+	}
+	summary := payload.Content.Detail.Summary
+	if summary == "" {
+		return
+	}
+	current := answer.String()
 	if len(summary) <= len(current) {
-		return ""
+		return
 	}
 	if strings.HasPrefix(summary, current) {
-		delta := summary[len(current):]
-		emitted.WriteString(delta)
-		return delta
+		answer.WriteString(summary[len(current):])
+		return
 	}
-	// The summary replaced the accumulated text (e.g. first line already full):
-	// keep the longer one and emit the whole new value.
-	if len(summary) > len(current) {
-		delta := summary
-		emitted.Reset()
-		emitted.WriteString(summary)
-		return delta
-	}
-	return ""
+	answer.Reset()
+	answer.WriteString(summary)
+}
+
+func payloadIsEnd(payload comateStreamPayload) bool {
+	return payload.Content.Detail.End || payload.Content.End
 }
 
 func buildStreamChunk(info *relaycommon.RelayInfo, delta string, finishReason *string) *dto.ChatCompletionsStreamResponse {
@@ -259,6 +231,9 @@ func responseModelName(info *relaycommon.RelayInfo) string {
 
 func comateExceptionMessage(payload comateStreamPayload) string {
 	if msg := strings.TrimSpace(payload.Content.Detail.ExceptionMsg); msg != "" {
+		return msg
+	}
+	if msg := strings.TrimSpace(payload.Content.Text); msg != "" {
 		return msg
 	}
 	if msg := strings.TrimSpace(payload.Content.Detail.Summary); msg != "" {

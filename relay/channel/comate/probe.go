@@ -99,11 +99,6 @@ func ModelListForLicense(ctx context.Context, baseURL, license string) ([]string
 	return models, nil
 }
 
-// buildComateChatURL returns the chat/stream URL for a base URL.
-func buildComateChatURL(baseURL string) string {
-	return strings.TrimRight(baseURL, "/") + ChatStreamPath
-}
-
 // encodeLicense returns the percent-encoded license used in login-name headers.
 func encodeLicense(license string) string {
 	return url.QueryEscape(license)
