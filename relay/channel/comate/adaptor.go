@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -85,15 +86,18 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 	if err != nil {
 		return nil, fmt.Errorf("new comate http client failed: %w", err)
 	}
+	stageStart := time.Now()
 
 	conversationID, err := a.createConversation(c, info, client)
 	if err != nil {
 		return nil, err
 	}
+	conversationDone := time.Now()
 	taskID, err := a.createTask(c, info, client, conversationID)
 	if err != nil {
 		return nil, err
 	}
+	logger.LogDebug(c, "comate stages: conversation=%s task=%s", conversationDone.Sub(stageStart), time.Since(conversationDone))
 	return a.execute(c, info, client, conversationID, taskID, envelope.Query)
 }
 
