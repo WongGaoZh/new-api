@@ -27,8 +27,23 @@ const (
 	ClientAgentVersion  = 12
 )
 
-// ModelList is the model suggestion list shown when creating the channel.
-// Chat requests always use modelKey=auto; keep one alias for the UI.
+// ModelList is the model list bound to an enterprise SaaS license. Values are
+// Comate model types accepted by the execute endpoint as modelKey. Availability
+// depends on the license; refresh from
+// GET /api/v2/api/models/available?key=<license>&type=ZULU.
 var ModelList = []string{
-	"comate-chat",
+	"deepseek-v4-flash",
+	"deepseek-v4-pro",
+	"deepseek-v4.1-flash",
+	"glm-4.7-fc",
+	"glm-5-turbo-fc",
+	"glm-5.1",
+	"glm-5.2",
+	"glm-5.3",
+	"glm-5.3-flash",
+	"glm-5v-turbo",
+	"kimi-k3.1-pro",
+	"kimi-k2.6-oneapi",
+	"minimax-m3",
+	"minimax-m2.7-fc",
 }

@@ -231,7 +231,7 @@ func (a *Adaptor) execute(c *gin.Context, info *relaycommon.RelayInfo, client *h
 		"agentId":        ClientAgentID,
 		"agentVersion":   ClientAgentVersion,
 		"query":          query,
-		"modelKey":       "auto",
+		"modelKey":       resolveModelKey(info),
 		"sendMode":       "normal",
 		"toolUseResults": []any{},
 		"isUserQuery":    true,
@@ -315,6 +315,20 @@ func (a *Adaptor) postJSON(c *gin.Context, info *relaycommon.RelayInfo, client *
 		return nil, fmt.Errorf("comate %s returned status %d: %s", path, resp.StatusCode, strings.TrimSpace(string(snippet)))
 	}
 	return resp, nil
+}
+
+// resolveModelKey maps the requested model to a Comate modelKey. Unknown
+// names (for example the legacy comate-chat alias) fall back to auto.
+func resolveModelKey(info *relaycommon.RelayInfo) string {
+	if info == nil || info.UpstreamModelName == "" {
+		return "auto"
+	}
+	for _, model := range ModelList {
+		if model == info.UpstreamModelName {
+			return model
+		}
+	}
+	return "auto"
 }
 
 // comateURL joins the channel base URL with a Comate path.
